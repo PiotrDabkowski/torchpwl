@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     ims = []
     fig = plt.figure()
-    pwl = torchpwl.MonoSlopedPWL(num_features=1, num_breakpoints=10)
+    pwl = torchpwl.MonoSlopedPWL(num_channels=1, num_breakpoints=10)
 
     opt = torch.optim.Adam(params=pwl.parameters(), lr=0.2)
 
@@ -51,5 +51,5 @@ if __name__ == '__main__':
         opt.step()
         print(loss.item())
 
-    animation.ArtistAnimation(fig, ims).save(
+    animation.ArtistAnimation(fig, ims, repeat=True).save(
         'gifs/sample_fit.gif', writer='pillow')

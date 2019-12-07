@@ -32,6 +32,91 @@ class BasePWL(torch.nn.Module):
         dx = 1e-3
         return -(self.forward(x) - self.forward(x + dx)) / dx
 
+def calibrate1d(x, xp, yp):
+    """
+    x: [N, C]
+    xp: [C, K]
+    yp: [C, K]
+    """
+    x_breakpoints = torch.cat([
+        x.unsqueeze(2),
+        xp.unsqueeze(0).repeat((x.shape[0], 1, 1))],
+        dim=2)
+    num_x_points = xp.shape[1]
+    sorted_x_breakpoints, x_indices = torch.sort(x_breakpoints, dim=2)
+    x_idx = torch.argmin(x_indices, dim=2)
+    cand_start_idx = x_idx - 1
+    start_idx = torch.where(
+        torch.eq(x_idx, 0), torch.tensor(1, device=x.device),
+        torch.where(
+            torch.eq(x_idx, num_x_points),
+            torch.tensor(num_x_points - 2, device=x.device),
+            cand_start_idx))
+    end_idx = torch.where(
+        torch.eq(start_idx, cand_start_idx), start_idx + 2, start_idx + 1)
+    start_x = torch.gather(
+        sorted_x_breakpoints, dim=2,
+        index=start_idx.unsqueeze(2)).squeeze(2)
+    end_x = torch.gather(
+        sorted_x_breakpoints, dim=2, index=end_idx.unsqueeze(2)).squeeze(2)
+    start_idx2 = torch.where(
+        torch.eq(x_idx, 0), torch.tensor(0, device=x.device),
+        torch.where(
+            torch.eq(x_idx, num_x_points),
+            torch.tensor(num_x_points - 2, device=x.device),
+            cand_start_idx))
+    y_positions_expanded = yp.unsqueeze(0).expand(
+        x.shape[0], -1, -1)
+    start_y = torch.gather(
+        y_positions_expanded, dim=2,
+        index=start_idx2.unsqueeze(2)).squeeze(2)
+    end_y = torch.gather(
+        y_positions_expanded, dim=2,
+        index=(start_idx2 + 1).unsqueeze(2)).squeeze(2)
+    cand = start_y + (x - start_x) * (end_y - start_y) / (
+            end_x - start_x + 1e-7)
+    return cand
+
+
+class Calibrator(torch.nn.Module):
+    MISSING_VALUE = 11.11
+    def __init__(self, keypoints, monotonicity, missing_value=MISSING_VALUE):
+        """
+        Will calibrate input to the range (-0.5, 0.5)*monotonicity.
+        Values <= keypoint[0] will map to -0.5*monotonicity.
+        Values >= keypoint[-1] will map to 0.5*monotonicity.
+        Value == missing_value will map to a learnable value.
+        Each channel is independently calibrated and can have its own keypoints.
+
+        keypoints: [C, K]
+        monotonicity: [C] (-1 or 1)
+        missing_value: float
+        """
+        super(Calibrator, self).__init__()
+        xp = keypoints.clone().detach()
+        self.register_buffer("offset", xp[:, :1].clone().detach())
+        self.register_buffer("scale", (xp[:, -1:]-self.offset).clone().detach())
+        xp = (xp - self.offset) / self.scale
+        c, k = list(xp.shape)
+        self.register_buffer("keypoints", xp)
+        self.register_buffer("monotonicity", torch.tensor(monotonicity, dtype=torch.float32).unsqueeze(0))
+        self.missing_value = self.MISSING_VALUE
+        yp = xp[:, 1:]-xp[:, :-1]
+        # [C, K - 1]
+        self.yp = torch.nn.Parameter(yp, requires_grad=True)
+        # [1, C]
+        self.missing_y = torch.nn.Parameter(torch.zeros_like(xp[:,0]).unsqueeze(0), requires_grad=True)
+
+    def forward(self, x):
+        missing = torch.zeros_like(x) + self.missing_y
+        yp = torch.cumsum(torch.abs(self.yp), dim=1)
+        xp = self.keypoints
+        last_val = yp[:, -1:]
+        yp = torch.cat([torch.zeros_like(last_val), yp / last_val], dim=1)
+        x_transformed = torch.clamp((x - self.offset)/self.scale, 0.0, 1.0)
+        calibrated = self.monotonicity*(calibrate1d(x_transformed, xp, yp) - 0.5)
+        return torch.where(x == self.missing_value, missing, calibrated)
+
 
 class BasePWLX(BasePWL):
     def __init__(self, num_channels, num_breakpoints, num_x_points):
@@ -88,43 +173,7 @@ class BasePointPWL(BasePWLX):
     def forward(self, x):
         old_shape = x.shape
         x = self.unpack_input(x)
-        x_breakpoints = torch.cat([
-            x.unsqueeze(2),
-            self.get_x_positions().unsqueeze(0).repeat((x.shape[0], 1, 1))
-        ],
-                                  dim=2)
-        sorted_x_breakpoints, x_indices = torch.sort(x_breakpoints, dim=2)
-        x_idx = torch.argmin(x_indices, dim=2)
-        cand_start_idx = x_idx - 1
-        start_idx = torch.where(
-            torch.eq(x_idx, 0), torch.tensor(1, device=x.device),
-            torch.where(
-                torch.eq(x_idx, self.num_x_points),
-                torch.tensor(self.num_x_points - 2, device=x.device),
-                cand_start_idx))
-        end_idx = torch.where(
-            torch.eq(start_idx, cand_start_idx), start_idx + 2, start_idx + 1)
-        start_x = torch.gather(
-            sorted_x_breakpoints, dim=2,
-            index=start_idx.unsqueeze(2)).squeeze(2)
-        end_x = torch.gather(
-            sorted_x_breakpoints, dim=2, index=end_idx.unsqueeze(2)).squeeze(2)
-        start_idx2 = torch.where(
-            torch.eq(x_idx, 0), torch.tensor(0, device=x.device),
-            torch.where(
-                torch.eq(x_idx, self.num_x_points),
-                torch.tensor(self.num_x_points - 2, device=x.device),
-                cand_start_idx))
-        y_positions_expanded = self.get_y_positions().unsqueeze(0).expand(
-            x.shape[0], -1, -1)
-        start_y = torch.gather(
-            y_positions_expanded, dim=2,
-            index=start_idx2.unsqueeze(2)).squeeze(2)
-        end_y = torch.gather(
-            y_positions_expanded, dim=2,
-            index=(start_idx2 + 1).unsqueeze(2)).squeeze(2)
-        cand = start_y + (x - start_x) * (end_y - start_y) / (
-            end_x - start_x + 1e-7)
+        cand = calibrate1d(x, self.get_x_positions(), self.get_y_positions())
         return self.repack_input(cand, old_shape)
 
 
