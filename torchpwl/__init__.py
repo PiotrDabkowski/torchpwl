@@ -1,7 +1,4 @@
-__all__ = ["PWL", "MonoPWL"]
-__version__ = "0.1.0"
+__all__ = ["PWL", "MonoPWL", "PointPWL", "MonoPointPWL", "Calibrator"]
+__version__ = "0.1.1"
 
-from .pwl import PointPWL, MonoPointPWL, SlopedPWL, MonoSlopedPWL
-
-PWL = SlopedPWL
-MonoPWL = MonoSlopedPWL
+from .pwl import PointPWL, MonoPointPWL, PWL, MonoPWL, Calibrator
