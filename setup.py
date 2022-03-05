@@ -24,7 +24,7 @@ Monotonicity is also supported via `MonoPWL`. See the class documentations for m
 # twine upload dist/*
 setup(
     name="torchpwl",
-    version="0.1.1",
+    version="0.2.0",
     packages=["torchpwl"],
     url="https://github.com/PiotrDabkowski/torchpwl",
     install_requires=["torch>=1.1.0"],

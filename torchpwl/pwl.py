@@ -10,7 +10,7 @@ def get_monotonicity(monotonicity, num_channels):
         if not (isinstance(monotonicity, torch.Tensor) and list(monotonicity.shape) == [num_channels]):
             raise ValueError("monotonicity must be either an int or a tensor with shape [num_channels]")
         if not torch.all(
-            torch.eq(monotonicity, 0) | torch.eq(monotonicity, 1) | torch.eq(monotonicity, -1)
+                torch.eq(monotonicity, 0) | torch.eq(monotonicity, 1) | torch.eq(monotonicity, -1)
         ).item():
             raise ValueError("monotonicity must be one of -1, 0, +1")
         return monotonicity.float()
@@ -30,11 +30,26 @@ class BasePWL(torch.nn.Module):
         return -(self.forward(x) - self.forward(x + dx)) / dx
 
 
-def calibrate1d(x, xp, yp):
-    """
-    x: [N, C]
-    xp: [C, K]
-    yp: [C, K]
+def calibrate1d(x: torch.Tensor, xp: torch.Tensor, yp: torch.Tensor) -> torch.Tensor:
+    """Performs piecewise linear interpolation for x, using xp and yp keypoints (knots).
+
+    Performs separate interpolation for each channel.
+
+    Args:
+        x: [N, C] points to be calibrated (interpolated). Batch with C channels.
+        xp: [C, K] x coordinates of the PWL knots. C is the number of channels, K is the number of knots.
+        yp: [C, K] y coordinates of the PWL knots. C is the number of channels, K is the number of knots.
+
+    Returns:
+        Interpolated points of the shape [N, C].
+
+    The piecewise linear function extends for the whole x axis (the outermost keypoints define the outermost
+    infinite lines).
+    For example:
+    >>> calibrate1d(torch.tensor([[0.5]]), torch.tensor([[0.0, 1.0]]), torch.tensor([[0.0, 2.0]]))
+    tensor([[1.0000]])
+    >>> calibrate1d(torch.tensor([[-10]]), torch.tensor([[0.0, 1.0]]), torch.tensor([[0.0, 2.0]]))
+    tensor([[-20.0000]])
     """
     x_breakpoints = torch.cat([x.unsqueeze(2), xp.unsqueeze(0).repeat((x.shape[0], 1, 1))], dim=2)
     num_x_points = xp.shape[1]
@@ -139,7 +154,7 @@ class BasePWLX(BasePWL):
                 "Invalid input, the input to the PWL module must have at least 2 dimensions with channels at dimension dim(1)."
             )
         assert shape[1] == self.num_channels, (
-            "Invalid input, the size of dim(1) must be equal to num_channels (%d)" % self.num_channels
+                "Invalid input, the size of dim(1) must be equal to num_channels (%d)" % self.num_channels
         )
         x = torch.transpose(x, 1, len(shape) - 1)
         assert x.shape[-1] == self.num_channels
